@@ -44,7 +44,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 
 
 # --------------------------------------------------------------------------

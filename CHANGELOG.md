@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.2 — 2026-07-23
+
+Documentation-only correction, released as a proper patch rather than amended in place — v0.2.1
+was already tagged and released, so the amend-an-unshipped-version shortcut no longer applied.
+
+- **Fixed an inaccurate description repeated in two places**: the README's opening line and the
+  GitHub repo's About field both said "Agentic-Gate is a Claude Code hook that referees calls
+  between environments." That undersells what's actually shipped — a **plugin** containing a
+  hook (the enforcement engine) *and* a management skill, not a bare hook. README corrected to
+  "Agentic-Gate is a Claude Code plugin — its hook referees calls between environments." GitHub
+  About field corrected separately (repo metadata, not a file in this repo) to "A Claude Code
+  plugin (hook + management skill) that referees cross-environment calls between skill packs,
+  plugins, and MCP servers." Also added topics (`claude-code`, `claude-code-plugin`,
+  `ai-agents`, `hooks`, `mcp`) for discoverability — the repo had none.
+- **Retroactively tagged and released v0.2.0 and v0.2.1** — both had shipped without a git tag
+  or a GitHub Release, despite the version being bumped in `plugin.json`/`marketplace.json`/
+  `VERSION` at the time. v0.2.0 tagged at its real historical commit; v0.2.1 tagged at its
+  actual commit. Found because the repo showed "no releases" despite the file-level version
+  being current — a gap between "the version number is right" and "the version is actually
+  released" worth remembering for future patches too.
+
 ## v0.2.1 — 2026-07-23
 
 Adds three CLI verbs and fixes a status-reporting gap, both surfaced by a real end-to-end

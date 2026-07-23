@@ -2,7 +2,7 @@
 
 **No skill crosses environments unannounced.**
 
-Agentic-Gate is a Claude Code hook that referees calls between
+Agentic-Gate is a Claude Code plugin — its hook referees calls between
 *environments* — named groups of skills, agents, commands, MCP servers, and
 resource paths, such as one vendor's plugin versus your own skill pack.
 Calls inside the active environment pass silently. Calls that cross into
@@ -61,7 +61,7 @@ From an interactive Claude Code session:
 Enable the plugin when prompted — enabling registers the hooks
 automatically. Your next session will report:
 
-> *Agentic-Gate v0.2.1 is installed but found no manifest … It is
+> *Agentic-Gate v0.2.2 is installed but found no manifest … It is
 > DISARMED for this session.*
 
 That's expected: the guardrail never guesses your boundaries. Ask Claude to
