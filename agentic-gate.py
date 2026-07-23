@@ -48,7 +48,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 
 
 # --------------------------------------------------------------------------
@@ -420,13 +420,19 @@ def _has_our_hook(entries) -> bool:
                for e in (entries or []) for h in e.get("hooks", []))
 
 
-def _armed_via_plugin() -> bool:
+def _armed_via_plugin(path: str = None) -> bool:
     """Heuristic: is this copy of the engine running from an installed
     plugin's cache location? (`claude plugin list` is the authoritative
     source but shelling out to it would make status depend on the `claude`
-    CLI being on PATH — this path-based check has no such dependency.)"""
+    CLI being on PATH — this path-based check has no such dependency.)
+    `path` defaults to this file's own real location; selftest passes a
+    synthetic path so the result doesn't depend on where the suite itself
+    happens to be invoked from — a real bug found by running the actual
+    installed copy, which reasonably (and correctly) said "plugin" while
+    the hardcoded-False test still expected the source-folder answer."""
     try:
-        return "/.claude/plugins/cache/" in str(Path(__file__).resolve())
+        target = path if path is not None else str(Path(__file__).resolve())
+        return "/.claude/plugins/cache/" in target
     except OSError:
         return False
 
@@ -1114,9 +1120,18 @@ def selftest() -> int:
                   "implicitly)", rc == 2)
 
             # --- status reports the real arming method (the live-test finding) ---
-            check("_armed_via_plugin is false for a script run from a "
-                  "temp selftest directory (not a plugin cache path)",
-                  _armed_via_plugin() is False)
+            # Synthetic paths, not this file's real location — the location-
+            # dependent version of this test passed from the source folder
+            # and failed from the real installed plugin cache, which is
+            # exactly the false negative a location-independent test exists
+            # to prevent.
+            check("_armed_via_plugin detects a real plugin cache path",
+                  _armed_via_plugin(
+                      "/Users/x/.claude/plugins/cache/cadenceux/"
+                      "agentic-gate/0.2.3/agentic-gate.py") is True)
+            check("_armed_via_plugin is false for a non-plugin path",
+                  _armed_via_plugin("/Users/x/Desktop/agentic-gate/"
+                                    "agentic-gate.py") is False)
     finally:
         for var, val in (("AGENTIC_GATE_HOME", prev_home),
                          ("AGENTIC_GATE_SETTINGS", prev_settings)):

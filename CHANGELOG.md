@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.4 — 2026-07-23
+
+Test-only fix, found immediately by actually installing v0.2.3 and running its own selftest
+from the real installed path rather than only from the source folder.
+
+- **`_armed_via_plugin`'s selftest case was location-dependent** — it called the function with
+  no argument, which reads the script's own real file location. That passed when run from the
+  source folder (not a plugin path) and correctly *failed* when run from
+  `~/.claude/plugins/cache/.../agentic-gate.py` (a real plugin path), because the hardcoded
+  `is False` expectation was simply wrong for that location. `_armed_via_plugin` now accepts an
+  optional `path` parameter (defaults to the real location in production, exactly as before);
+  the selftest passes two synthetic paths so its result no longer depends on where the suite
+  itself happens to run from.
+- Selftest: 50 → 51 cases.
+
 ## v0.2.3 — 2026-07-23
 
 Built for a real QA-isolation workflow: park a default "own skills" bubble for everyday work,

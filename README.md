@@ -61,7 +61,7 @@ From an interactive Claude Code session:
 Enable the plugin when prompted — enabling registers the hooks
 automatically. Your next session will report:
 
-> *Agentic-Gate v0.2.3 is installed but found no manifest … It is
+> *Agentic-Gate v0.2.4 is installed but found no manifest … It is
 > DISARMED for this session.*
 
 That's expected: the guardrail never guesses your boundaries. Ask Claude to
@@ -99,7 +99,7 @@ python3 agentic-gate.py install
 `install` copies the engine to `~/.claude/agentic-gate/`, seeds the
 manifest if none exists (it never overwrites one), and registers the three
 hooks in user-scope `~/.claude/settings.json` — idempotently, with a backup
-of your settings written alongside. Verify with `selftest` (50/50 expected)
+of your settings written alongside. Verify with `selftest` (51/51 expected)
 and `status` (its `armed_via` field reports `plugin`, `standalone`, `both`,
 or `none` — checked independently of which method you actually used).
 
