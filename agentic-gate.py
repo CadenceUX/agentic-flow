@@ -22,9 +22,15 @@ Config: ~/.claude/agentic-gate/environments.json  (see environments.example.json
 Override the config dir with $AGENTIC_GATE_HOME (used by selftest).
 
 Usage:
-  echo '<hook-json>' | agentic-gate.py     # normal hook invocation
-  agentic-gate.py selftest                 # run embedded fixture tests
-  agentic-gate.py status [session_id]      # print active state
+  echo '<hook-json>' | agentic-gate.py         # normal hook invocation
+  agentic-gate.py install / uninstall [--purge]
+  agentic-gate.py status [session_id]          # print active state + how it's armed
+  agentic-gate.py environments [query]         # list, or search name/description/patterns
+  agentic-gate.py switch <env> [session_id]    # manually set the active environment
+  agentic-gate.py classify <env> [--skill P] [--agent P] [--command P]
+                                 [--mcp P] [--path P] [--create "description"]
+  agentic-gate.py audit [--roots DIR]          # find installed resources the manifest misses
+  agentic-gate.py selftest                     # run embedded fixture tests
 
 MIT License — Darrin Southern, CadenceUX, 2026.
 """
@@ -38,7 +44,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 
 # --------------------------------------------------------------------------
@@ -69,6 +75,18 @@ def load_manifest():
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def save_manifest(manifest: dict) -> None:
+    """Write the manifest back, backing up the previous version first —
+    same discipline as _write_settings for settings.json."""
+    p = manifest_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists():
+        shutil.copy2(p, p.with_name(p.name + ".af-backup"))
+    with open(p, "w") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
 
 
 def load_state(session_id: str) -> dict:
@@ -389,6 +407,17 @@ def _has_our_hook(entries) -> bool:
                for e in (entries or []) for h in e.get("hooks", []))
 
 
+def _armed_via_plugin() -> bool:
+    """Heuristic: is this copy of the engine running from an installed
+    plugin's cache location? (`claude plugin list` is the authoritative
+    source but shelling out to it would make status depend on the `claude`
+    CLI being on PATH — this path-based check has no such dependency.)"""
+    try:
+        return "/.claude/plugins/cache/" in str(Path(__file__).resolve())
+    except OSError:
+        return False
+
+
 HOOK_SPEC = {"SessionStart": None, "PreToolUse": "*", "PostToolUse": "Skill"}
 
 
@@ -555,6 +584,203 @@ def audit(argv, quiet=False):
 
 
 # --------------------------------------------------------------------------
+# environments / switch / classify — discovery and manifest editing
+# --------------------------------------------------------------------------
+
+ENV_FIELDS = ("skills", "agents", "commands", "mcp", "paths")
+CLASSIFY_FLAGS = {"--skill": "skills", "--agent": "agents",
+                   "--command": "commands", "--mcp": "mcp", "--path": "paths"}
+
+
+def _env_summary_line(name: str, env: dict) -> str:
+    counts = [f"{len(env.get(f) or [])} {f}" for f in ENV_FIELDS if env.get(f)]
+    tail = f"  [{', '.join(counts)}]" if counts else ""
+    return f"{name}: {env.get('description', '(no description)')}{tail}"
+
+
+def _env_search_hits(query: str, name: str, env: dict):
+    """Two matching modes, both useful for different questions:
+    - case-insensitive substring against name/description/pattern *text*
+      ('environments vendorx' finds every pattern that mentions it), and
+    - fnmatch of the query *as a concrete identifier* against each glob
+      pattern ('environments VendorX:schema-builder' answers 'which
+      environment would this exact call land in?', even though the
+      manifest only ever declares 'VendorX:*', not that literal name).
+    Returns a list of human-readable hit descriptions (empty if no match)."""
+    q = query.lower()
+    hits = []
+    if q in name.lower():
+        hits.append("name")
+    if q in (env.get("description") or "").lower():
+        hits.append("description")
+    for field in ENV_FIELDS:
+        for pattern in (env.get(field) or []):
+            if q in pattern.lower():
+                hits.append(f"{field} pattern '{pattern}' (text match)")
+            elif fnmatch.fnmatch(query, pattern):
+                hits.append(f"{field} pattern '{pattern}' "
+                            f"(would classify this identifier)")
+    return hits
+
+
+def environments_cmd(argv, quiet=False):
+    """List all environments, or search them by a query string that matches
+    against name, description, or any declared skill/agent/command/mcp/path
+    pattern — e.g. `environments VendorX:schema-builder` answers 'which
+    environment would this exact agent land in?' (matched against the
+    declared glob, even though only 'FileMaker:*' is ever written down),
+    while `environments vendor-x` or `environments FileMaker` filters by
+    name or by pattern text."""
+    manifest = load_manifest()
+    if manifest is None:
+        if not quiet:
+            print(f"agentic-gate: no manifest at {manifest_path()} — "
+                  f"nothing to list.")
+        return {"environments": {}}
+
+    envs = manifest.get("environments") or {}
+    query = " ".join(argv).strip()
+
+    if not query:
+        if not quiet:
+            for name, env in envs.items():
+                print(_env_summary_line(name, env))
+            shared = manifest.get("shared") or {}
+            if shared:
+                print(_env_summary_line("(shared)", shared))
+        return {"environments": sorted(envs)}
+
+    matches = {name: hits for name, env in envs.items()
+               if (hits := _env_search_hits(query, name, env))}
+    if not quiet:
+        if not matches:
+            print(f"no environments match '{query}'")
+        for name, hits in matches.items():
+            print(f"{name}: matched on {', '.join(hits)}")
+    return {"matches": matches}
+
+
+def switch_cmd(argv, quiet=False):
+    """Manually set the active environment for a session — the third way an
+    active environment changes, alongside SessionStart's project-home lookup
+    and PostToolUse's automatic switch-on-skill-run."""
+    if not argv:
+        print("agentic-gate: switch requires an environment name "
+              "(usage: switch <env> [session_id])", file=sys.stderr)
+        return 2
+    env_name, session_id = argv[0], (argv[1] if len(argv) > 1 else "default")
+
+    manifest = load_manifest()
+    if manifest is None:
+        print(f"agentic-gate: no manifest at {manifest_path()}.",
+              file=sys.stderr)
+        return 2
+    envs = manifest.get("environments") or {}
+    if env_name not in envs:
+        print(f"agentic-gate: unknown environment '{env_name}'. "
+              f"Known: {', '.join(sorted(envs)) or '(none defined)'}",
+              file=sys.stderr)
+        return 2
+
+    state = load_state(session_id)
+    state["active"] = env_name
+    state["set_by"] = "manual switch"
+    state["ts"] = time.time()
+    save_state(session_id, state)
+    if not quiet:
+        print(f"active environment for session '{session_id}' → {env_name}")
+    return 0
+
+
+def classify_cmd(argv, quiet=False):
+    """Add skill/agent/command/mcp/path patterns to an environment's
+    declaration in the manifest — the write-side companion to `audit`
+    (which finds what's unassigned) and `environments` (which finds what's
+    already assigned where). Creates a new environment with --create when
+    it doesn't exist yet; refuses to silently redefine an existing one."""
+    if not argv:
+        print("agentic-gate: classify requires an environment name "
+              "(usage: classify <env> [--skill P] [--agent P] [--command P] "
+              "[--mcp P] [--path P] [--create \"description\"])",
+              file=sys.stderr)
+        return 2
+    env_name, rest = argv[0], argv[1:]
+
+    additions, create_desc = {}, None
+    i = 0
+    while i < len(rest):
+        flag = rest[i]
+        if flag == "--create":
+            if i + 1 >= len(rest):
+                print("agentic-gate: --create requires a description",
+                      file=sys.stderr)
+                return 2
+            create_desc = rest[i + 1]
+            i += 2
+            continue
+        field = CLASSIFY_FLAGS.get(flag)
+        if field is None:
+            print(f"agentic-gate: unknown flag '{flag}' (expected one of "
+                  f"{', '.join(CLASSIFY_FLAGS)}, --create)", file=sys.stderr)
+            return 2
+        if i + 1 >= len(rest):
+            print(f"agentic-gate: {flag} requires a pattern", file=sys.stderr)
+            return 2
+        additions.setdefault(field, []).append(rest[i + 1])
+        i += 2
+
+    manifest = load_manifest()
+    if manifest is None:
+        print(f"agentic-gate: no manifest at {manifest_path()}. Run "
+              f"'install' first.", file=sys.stderr)
+        return 2
+
+    envs = manifest.setdefault("environments", {})
+    created = False
+    if env_name not in envs:
+        if create_desc is None:
+            print(f"agentic-gate: environment '{env_name}' does not exist. "
+                  f"Known: {', '.join(sorted(envs)) or '(none defined)'}. "
+                  f"Add --create \"description\" to create it.",
+                  file=sys.stderr)
+            return 2
+        envs[env_name] = {"description": create_desc, "skills": [],
+                           "agents": [], "commands": [], "mcp": [],
+                           "paths": []}
+        created = True
+        if not quiet:
+            print(f"created environment '{env_name}': {create_desc}")
+    elif create_desc is not None:
+        print(f"agentic-gate: environment '{env_name}' already exists — "
+              f"omit --create to add patterns to it, or edit its "
+              f"description directly in {manifest_path()}.", file=sys.stderr)
+        return 2
+
+    env = envs[env_name]
+    added, skipped = [], []
+    for field, patterns in additions.items():
+        bucket = env.setdefault(field, [])
+        for pattern in patterns:
+            if pattern in bucket:
+                skipped.append(f"{field}:{pattern}")
+            else:
+                bucket.append(pattern)
+                added.append(f"{field}:{pattern}")
+
+    if added or created:
+        save_manifest(manifest)
+    if not quiet:
+        if added:
+            print(f"added to '{env_name}': {', '.join(added)}")
+        if skipped:
+            print(f"already present, skipped: {', '.join(skipped)}")
+        if not added and not skipped and not created:
+            print(f"'{env_name}' unchanged — no patterns given "
+                  f"(--skill/--agent/--command/--mcp/--path).")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Selftest
 # --------------------------------------------------------------------------
 
@@ -691,6 +917,94 @@ def selftest() -> int:
             check("audit reports unclassified plugin resources",
                   len(report["unassigned"]) == 3,
                   f"(got {report['unassigned']})")
+
+            # --- environments: list and search ---
+            listing = environments_cmd([], quiet=True)
+            check("environments (no query) lists every manifest environment",
+                  set(listing["environments"]) ==
+                  set(SELFTEST_MANIFEST["environments"]),
+                  f"(got {listing['environments']})")
+
+            search = environments_cmd(["VendorX:schema-builder"], quiet=True)
+            check("environments <query> reverse-looks-up a concrete "
+                  "identifier against a declared glob pattern",
+                  "vendor-x" in search["matches"],
+                  f"(got {search['matches']})")
+
+            search1b = environments_cmd(["VendorX"], quiet=True)
+            check("environments <query> also matches by pattern text",
+                  "vendor-x" in search1b["matches"],
+                  f"(got {search1b['matches']})")
+
+            search2 = environments_cmd(["vendor-y"], quiet=True)
+            check("environments <query> matches by environment name",
+                  list(search2["matches"]) == ["vendor-y"],
+                  f"(got {search2['matches']})")
+
+            search3 = environments_cmd(["no-such-thing-anywhere"], quiet=True)
+            check("environments <query> with no hits returns no matches",
+                  search3["matches"] == {})
+
+            # --- switch ---
+            save_state("t3", {"active": "pack-a"})
+            rc = switch_cmd(["vendor-x", "t3"], quiet=True)
+            check("switch succeeds for a known environment", rc == 0)
+            check("switch actually updates the session's active environment",
+                  load_state("t3").get("active") == "vendor-x")
+            check("switch records how the change was made",
+                  load_state("t3").get("set_by") == "manual switch")
+
+            rc = switch_cmd(["not-a-real-env", "t3"], quiet=True)
+            check("switch refuses an unknown environment", rc == 2)
+            check("switch leaves state untouched after a refusal",
+                  load_state("t3").get("active") == "vendor-x")
+
+            # --- classify: add patterns to an existing environment ---
+            rc = classify_cmd(["vendor-x", "--skill", "VendorX:new-tool"],
+                              quiet=True)
+            check("classify (existing env) succeeds", rc == 0)
+            reloaded = load_manifest()
+            check("classify persists the new pattern to the manifest file",
+                  "VendorX:new-tool" in
+                  reloaded["environments"]["vendor-x"]["skills"])
+            check("classify's addition is enforced on the next evaluation",
+                  evaluate(reloaded, {"active": "pack-a"}, "Skill",
+                          {"skill": "VendorX:new-tool"})["decision"] == "warn")
+
+            rc = classify_cmd(["vendor-x", "--skill", "VendorX:new-tool"],
+                              quiet=True)
+            check("classify is idempotent — re-adding the same pattern "
+                  "doesn't duplicate it",
+                  load_manifest()["environments"]["vendor-x"]["skills"]
+                  .count("VendorX:new-tool") == 1)
+
+            # --- classify: refuse an unknown environment without --create ---
+            rc = classify_cmd(["brand-new-env", "--skill", "x:*"], quiet=True)
+            check("classify refuses an unknown environment without --create",
+                  rc == 2)
+            check("classify makes no manifest change on refusal",
+                  "brand-new-env" not in load_manifest()["environments"])
+
+            # --- classify: create a new environment ---
+            rc = classify_cmd(["brand-new-env", "--create", "Test env",
+                               "--skill", "brand-new:*"], quiet=True)
+            check("classify --create succeeds", rc == 0)
+            created = load_manifest()["environments"].get("brand-new-env")
+            check("classify --create adds the environment with its "
+                  "description and pattern",
+                  created is not None and
+                  created["description"] == "Test env" and
+                  "brand-new:*" in created["skills"])
+
+            rc = classify_cmd(["brand-new-env", "--create", "Again"],
+                              quiet=True)
+            check("classify --create refuses to redefine an existing "
+                  "environment", rc == 2)
+
+            # --- status reports the real arming method (the live-test finding) ---
+            check("_armed_via_plugin is false for a script run from a "
+                  "temp selftest directory (not a plugin cache path)",
+                  _armed_via_plugin() is False)
     finally:
         for var, val in (("AGENTIC_GATE_HOME", prev_home),
                          ("AGENTIC_GATE_SETTINGS", prev_settings)):
@@ -722,6 +1036,13 @@ def main() -> int:
         if verb == "audit":
             report = audit(rest)
             return 1 if report["unassigned"] else 0
+        if verb == "environments":
+            environments_cmd(rest)
+            return 0
+        if verb == "switch":
+            return switch_cmd(rest)
+        if verb == "classify":
+            return classify_cmd(rest)
         if verb == "status":
             sid = rest[0] if rest else "default"
             settings = {}
@@ -729,17 +1050,22 @@ def main() -> int:
                 settings = _read_settings()
             except SystemExit:
                 pass
-            armed = any(_has_our_hook((settings.get("hooks") or {}).get(e))
-                        for e in HOOK_SPEC)
+            standalone = any(_has_our_hook((settings.get("hooks") or {}).get(e))
+                             for e in HOOK_SPEC)
+            via_plugin = _armed_via_plugin()
+            armed_via = ("both" if standalone and via_plugin else
+                        "standalone" if standalone else
+                        "plugin" if via_plugin else "none")
             print(json.dumps({"version": VERSION,
                               "manifest": str(manifest_path()),
                               "manifest_found": load_manifest() is not None,
-                              "hooks_registered_in_settings": armed,
+                              "armed_via": armed_via,
+                              "hooks_registered_in_settings": standalone,
                               "state": load_state(sid)}, indent=2))
             return 0
-        print(f"agentic-gate: unknown verb '{verb}' "
-              f"(expected: install, uninstall, audit, status, selftest)",
-              file=sys.stderr)
+        print(f"agentic-gate: unknown verb '{verb}' (expected: install, "
+              f"uninstall, audit, environments, switch, classify, status, "
+              f"selftest)", file=sys.stderr)
         return 2
 
     try:

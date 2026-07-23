@@ -61,7 +61,7 @@ From an interactive Claude Code session:
 Enable the plugin when prompted — enabling registers the hooks
 automatically. Your next session will report:
 
-> *Agentic-Gate v0.2.0 is installed but found no manifest … It is
+> *Agentic-Gate v0.2.1 is installed but found no manifest … It is
 > DISARMED for this session.*
 
 That's expected: the guardrail never guesses your boundaries. Ask Claude to
@@ -99,8 +99,9 @@ python3 agentic-gate.py install
 `install` copies the engine to `~/.claude/agentic-gate/`, seeds the
 manifest if none exists (it never overwrites one), and registers the three
 hooks in user-scope `~/.claude/settings.json` — idempotently, with a backup
-of your settings written alongside. Verify with `selftest` (20/20 expected)
-and `status`.
+of your settings written alongside. Verify with `selftest` (40/40 expected)
+and `status` (its `armed_via` field reports `plugin`, `standalone`, `both`,
+or `none` — checked independently of which method you actually used).
 
 To make enforcement immutable on a machine, move the hook *registration*
 (not the manifest) into `/Library/Application Support/ClaudeCode/managed-settings.json`
@@ -146,6 +147,47 @@ Scans installed plugins for skills, agents, and commands, and reports
 anything your manifest doesn't classify — run it after installing any new
 pack, so new toolsets get classified deliberately instead of inheriting
 access silently. Exit code 1 when unassigned items exist (CI-friendly).
+
+## Discovery and classification
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py environments
+python3 ~/.claude/agentic-gate/agentic-gate.py environments vendor-x
+python3 ~/.claude/agentic-gate/agentic-gate.py environments VendorX:schema-builder
+```
+
+`environments` with no argument lists every environment (description, and
+how many skills/agents/commands/mcp/paths each declares). With a query, it
+searches two ways at once: plain substring match against names/descriptions/
+pattern *text*, and `fnmatch` of the query *as a concrete identifier*
+against each declared glob — so searching a real agent name answers "which
+environment would this exact call land in?" even when the manifest only
+ever wrote down a wildcard like `VendorX:*`, never that literal name.
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py switch vendor-x
+python3 ~/.claude/agentic-gate/agentic-gate.py switch vendor-x my-session-id
+```
+
+`switch` manually sets the active environment for a session (defaults to
+session `default`, matching `status`'s own convention) — a third way the
+active environment changes, alongside `SessionStart`'s project-home lookup
+and `PostToolUse`'s automatic switch when a skill actually runs. Refuses
+unknown environment names and lists the real ones instead of guessing.
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py classify vendor-x --skill "VendorX:*"
+python3 ~/.claude/agentic-gate/agentic-gate.py classify new-vendor --create "A new toolset" --skill "NewVendor:*"
+```
+
+`classify` adds skill/agent/command/mcp/path patterns to an environment's
+declaration — the write-side companion to `audit` (finds what's
+*unassigned*) and `environments` (finds what's already assigned *where*).
+Add `--create "description"` to define a brand-new environment in the same
+call; without it, `classify` refuses an unknown environment name rather
+than silently creating a typo. Adding a pattern that's already present is a
+no-op, not a duplicate. The manifest is backed up before every write, same
+discipline as `install`'s settings.json backup.
 
 ## The manifest
 
