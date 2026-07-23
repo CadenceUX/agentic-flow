@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.6 — 2026-07-23
+
+Follow-up to v0.2.5's `switch --preview`, refining the page after actually looking at it —
+requested while setting up two real environments (`agentic-fm`, `proofkit`) side by side and
+wanting the preview to double as a quick map of what depends on what.
+
+- **"Other declared environments" is now a table, not a name list** — each row shows the
+  environment's colour dot, its full description, and a compact declared-surface count (e.g.
+  "1 skills, 6 commands"), reusing the same field-count logic `environments` already prints.
+  Answers "what does this other environment actually contain?" without switching into it.
+- **"Switched out of" converted to the same table format** — was a single description line;
+  now matches "Other declared environments" exactly (environment / description / declares),
+  including its own declared-surface counts. Falls back to a single "no prior active
+  environment this session" row when there's nothing to show.
+- No CLI changes — same `switch <env> [session_id] --preview [PATH]` invocation as v0.2.5.
+- Selftest unchanged at 60 cases (page-content assertions already covered by v0.2.5's checks;
+  no new branches introduced).
+
 ## v0.2.5 — 2026-07-23
 
 Requested after using `switch` blind a few times in one session and wanting visual confirmation

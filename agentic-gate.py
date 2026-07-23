@@ -53,7 +53,7 @@ import time
 from html import escape
 from pathlib import Path
 
-VERSION = "0.2.5"
+VERSION = "0.2.6"
 
 
 # --------------------------------------------------------------------------
@@ -844,7 +844,26 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
         f"<tr><td><span class='kind kind-{k}'>{escape(k)}</span></td>"
         f"<td>{escape(v)}</td></tr>" for k, v in _hook_wiring())
 
-    other_envs = ", ".join(sorted(n for n in envs if n != new_env_name)) or "(none)"
+    def _field_counts(bucket):
+        counts = [f"{len(bucket.get(f) or [])} {f}" for f in ENV_FIELDS
+                  if bucket.get(f)]
+        return ", ".join(counts) or "nothing declared"
+
+    other_env_rows = "".join(
+        f"<tr><td>{_env_dot(name)}</td>"
+        f"<td class='muted'>{escape(env.get('description', '(no description)'))}</td>"
+        f"<td class='mono muted'>{escape(_field_counts(env))}</td></tr>"
+        for name, env in sorted(envs.items()) if name != new_env_name
+    ) or "<tr><td colspan='3' class='muted'>no other environments declared</td></tr>"
+
+    prev_env = envs.get(prev_env_name) if prev_env_name else None
+    if prev_env_name and prev_env is not None:
+        prev_env_row = (f"<tr><td>{_env_dot(prev_env_name)}</td>"
+                        f"<td class='muted'>{escape(prev_env.get('description', '(no description)'))}</td>"
+                        f"<td class='mono muted'>{escape(_field_counts(prev_env))}</td></tr>")
+    else:
+        prev_env_row = ("<tr><td colspan='3' class='muted'>no prior active "
+                        "environment this session</td></tr>")
 
     return f"""<style>
 .ag-wrap {{
@@ -913,12 +932,16 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
   </table></div>
 
   <h2>Switched out of</h2>
-  <div class="desc">{_env_dot(prev_env_name)}
-    <span class="muted">— {escape((envs.get(prev_env_name) or {}).get('description', 'no prior active environment this session') if prev_env_name else 'no prior active environment this session')}</span>
-  </div>
+  <div class="table-scroll"><table>
+    <tr><th>Environment</th><th>Description</th><th>Declares</th></tr>
+    {prev_env_row}
+  </table></div>
 
   <h2>Other declared environments</h2>
-  <div class="muted">{escape(other_envs)}</div>
+  <div class="table-scroll"><table>
+    <tr><th>Environment</th><th>Description</th><th>Declares</th></tr>
+    {other_env_rows}
+  </table></div>
 </div>"""
 
 
