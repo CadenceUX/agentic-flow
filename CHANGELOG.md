@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.2.8 — 2026-07-24
+
+Three follow-ups from actually using `switch --preview` and then actually trying to manage a
+manifest day-to-day. First: the page told you what you'd switched *to* but not what else you
+could switch *to*, or what the rest of the CLI could do. Second: there was no way to deliberately
+load *nothing*, which matters for auditing a newly installed pack's real footprint from a neutral
+baseline instead of from inside an environment that already trusts it. Third, and most serious:
+asking "how do I remove a pattern / delete an environment / edit policy?" surfaced that `classify`
+was add-only — there was no CRUD story at all for removal, rename, description edits, or the
+`policy`/`projects` blocks, and `classify`'s own refusal message for an existing environment's
+description literally told the user to hand-edit `environments.json` — directly contradicting
+this skill's own prime directive never to do that.
+
+- **`switch none <session_id>`** — a reserved target (same pattern as `classify shared`, not a
+  real environment name) that clears the active environment entirely. With nothing active, every
+  classified skill/agent/command becomes a cross-environment reach subject to policy (warn/ask/
+  deny per `policy.default` or an explicit pair) instead of being silently trusted as home — only
+  the shared tier still passes. It's a starting point, not a sticky lock: the normal `PostToolUse`
+  auto-switch still promotes `active` away from `none` the first time a `Skill` call is actually
+  allowed through, same as switching into any other environment. Rendered in `switch --preview`
+  and `status` as "none (clean)" with a neutral grey marker, not a random palette colour.
+- **`switch --preview`'s page now ends with two reference tables**: "Switch — your options" (every
+  `switch` call form paired with a description) and "Other commands" (all 14 remaining call forms
+  across `status`/`environments`/`classify`/`declassify`/`policy`/`project`/`audit`/`install`/
+  `uninstall`/`selftest`) — so the published page is self-contained without needing the README or
+  this skill file open alongside it.
+- **Full CRUD, finally.** `declassify <env|shared> [--skill P] [--agent P] [--command P] [--mcp P]
+  [--path P]` is the removal-side companion to `classify` (idempotent — removing an absent pattern
+  is a safe no-op). `classify` gains three solo structural flags: `--delete` (remove a whole
+  environment; refuses `shared` and a not-found name), `--rename <new-name>` (refuses to overwrite
+  an existing name or the reserved `none` target), and `--description "text"` (replaces the old
+  "edit it directly in environments.json" refusal message). New `policy` verb shows/edits
+  `policy.default`, `policy.unknown`, and `policy.pairs` (`--default`/`--unknown`/`--pair`/
+  `--unpair`, with mode validation). New `project` verb shows/edits the `projects` cwd→environment
+  map (`--set`/`--unset`), including mapping a project to the reserved `none` target for a
+  genuinely zero-trust-by-default setup. `classify --create` and `--rename`'s target now both
+  refuse the reserved `none` name, closing a gap the earlier `switch none` release left open.
+  README gains a "Command reference" table (all 18 verb forms) and a full "Full CRUD" walkthrough
+  section; this skill file's manifest-editing guidance no longer implies hand-editing is ever the
+  answer.
+- Selftest: 87 → 144 cases (`switch none` CLI plumbing and its cross-environment enforcement
+  semantics, the preview page's expanded reference tables, and the entire new CRUD surface —
+  declassify, classify --delete/--rename/--description including every refusal path and the
+  reserved-name guards, and policy/project show-and-edit including mode/typo validation).
+
 ## v0.2.7 — 2026-07-23
 
 Prompted by a real incident: a `switch` call made during this session omitted the session id

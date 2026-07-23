@@ -47,6 +47,40 @@ can audit exactly when and where boundaries were tested.
 The guardrail **fails open**: a malformed manifest, a broken state file, or
 an internal error never blocks your session — it logs and steps aside.
 
+## Command reference
+
+Every verb, at a glance. Each is covered in its own detail below.
+
+| Call | What it does |
+|---|---|
+| `status ["$CLAUDE_CODE_SESSION_ID"]` | Print this session's active environment, the manifest path, and how the guardrail is armed (plugin / standalone / both / none). |
+| `environments` | List every declared environment: description plus a declared-surface count for each. |
+| `environments <environment-name\|shared>` | Show one environment's (or the shared tier's) full declared contents — every pattern, not just a count. |
+| `environments <query>` | Search by name/description/pattern text, or reverse-look-up a concrete skill/agent/command name against a declared glob. |
+| `switch <environment-name> "$CLAUDE_CODE_SESSION_ID"` | Manually set this session's active environment. A real session id is required — refuses a missing one or the literal `default` unless `--allow-default` is passed. |
+| `switch <environment-name> "$CLAUDE_CODE_SESSION_ID" --preview [PATH]` | Same, and also writes a self-contained HTML status page (default `~/.claude/agentic-gate/switch-preview.html`). |
+| `switch none "$CLAUDE_CODE_SESSION_ID"` | Clear the active environment entirely — a deliberately clean, locked session where nothing is silently trusted. `none` is a reserved target, not a real environment name. |
+| `classify <environment-name> --skill P [--agent P] [--command P] [--mcp P] [--path P]` | Add patterns to an existing environment's declaration. |
+| `classify <new-name> --create "description" --skill P` | Create a brand-new environment and declare it in the same call. |
+| `classify shared --command P` | Add a delivery-utility pattern to the shared tier (always available from any environment, silently). |
+| `classify <environment-name> --delete` | Delete the whole environment. |
+| `classify <environment-name> --rename <new-name>` | Rename an environment, preserving its patterns. |
+| `classify <environment-name> --description "text"` | Update an existing environment's description. |
+| `declassify <environment-name\|shared> --skill P [--agent P] [--command P] [--mcp P] [--path P]` | Remove patterns — the removal-side companion to `classify`. |
+| `policy` | Show the manifest's policy block (default mode, unknown mode, pair overrides). |
+| `policy --default warn\|ask\|deny\|gate` | Set the mode for a cross-environment reach with no explicit pair override. |
+| `policy --unknown warn\|ask\|deny\|allow` | Set the mode for a call that matches no declared environment at all. |
+| `policy --pair "envA\|envB" warn\|ask\|deny\|gate` | Set an explicit override for one specific boundary. |
+| `policy --unpair "envA\|envB"` | Remove a pair override. |
+| `project` | Show which environment is 'home' for each mapped project path. |
+| `project --set <path\|*> <environment-name>` | Map a project path (or `*` for the fallback) to an environment. |
+| `project --unset <path\|*>` | Remove a project mapping. |
+| `audit [--roots DIR]` | Scan installed plugins and report anything the manifest doesn't classify. Exit code 1 if anything is unassigned (CI-friendly). |
+| `audit --check-updates` | Also resolve each classified resource's installed version and check GitHub for newer releases where possible; writes a full report to `inventory.json`. |
+| `install` | Standalone-arm the guardrail (copy engine, seed manifest, register hooks). Not needed if armed via the plugin. |
+| `uninstall [--purge]` | Disarm the guardrail. Keeps the manifest and crossings log by default; `--purge` removes those and the engine too. |
+| `selftest` | Run the embedded fixture test suite. |
+
 ## Install
 
 ### Quick start (new users)
@@ -206,6 +240,18 @@ to target `status`/`switch` at the actual conversation you're in, rather
 than a made-up ID: `agentic-gate.py status "$CLAUDE_CODE_SESSION_ID"` shows
 this session's real active environment.
 
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py switch none "$CLAUDE_CODE_SESSION_ID"
+```
+
+**`none` is a reserved target** (same pattern as `classify shared`, not a
+real environment name) that clears the active environment entirely — a
+deliberately clean, locked session where nothing is silently trusted.
+Every classified skill/agent/command becomes a cross-environment reach
+subject to policy (the shared tier still passes). Useful for auditing a
+newly installed pack's true footprint from a neutral baseline, rather than
+from inside another environment that already grants it implicit trust.
+
 Add **`--preview [PATH]`** to also write a self-contained HTML status page
 (default `~/.claude/agentic-gate/switch-preview.html`) — a visual answer to
 "what did that switch actually change?": the environment switched from and
@@ -219,6 +265,9 @@ can render it — in Claude Code, ask Claude to publish it as an Artifact.
 Only the manual `switch` verb generates this; the automatic
 SessionStart/PostToolUse switches stay silent, since a preview per silent
 switch during ordinary work would be constant noise, not a useful signal.
+The page also ends with a "Switch — your options" reference table (every
+`switch` call form, including `none`, paired with what it does) so the
+page is self-contained without needing this README open alongside it.
 
 ```bash
 python3 ~/.claude/agentic-gate/agentic-gate.py classify vendor-x --skill "VendorX:*"
@@ -237,6 +286,82 @@ implicitly, so `--create` doesn't apply to it. Adding a pattern that's
 already present is a no-op, not a duplicate. The manifest is backed up
 before every write, same
 discipline as `install`'s settings.json backup.
+
+## Full CRUD
+
+`classify` above covers **create** (`--create`) and **update, add-only**
+(bare `--skill`/`--agent`/`--command`/`--mcp`/`--path`). The rest of CRUD —
+removing a pattern, renaming or deleting a whole environment, editing its
+description, and editing policy/project mappings — has its own verbs and
+flags, so nothing ever requires hand-editing `environments.json`.
+
+**Remove a pattern** — the removal-side companion to `classify`, same flag
+shape:
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py declassify vendor-x --skill "VendorX:old-tool"
+python3 ~/.claude/agentic-gate/agentic-gate.py declassify shared --command a-retired-tool
+```
+
+Removing a pattern that isn't there is a safe no-op, not an error — same
+idempotence as `classify`'s additions.
+
+**Delete, rename, or re-describe a whole environment** — three solo flags
+on `classify`, each used alone (never combined with each other, `--create`,
+or a pattern flag in the same call):
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py classify old-vendor --delete
+python3 ~/.claude/agentic-gate/agentic-gate.py classify old-name --rename new-name
+python3 ~/.claude/agentic-gate/agentic-gate.py classify vendor-x --description "Updated description"
+```
+
+`--delete` refuses `shared` (it always exists implicitly — there's nothing
+to delete) and refuses an environment that doesn't exist (no silent
+no-op, unlike pattern removal — deleting the wrong thing is a bigger
+mistake to make silently). `--rename` refuses to overwrite an existing
+name and refuses the reserved `none` target. Neither updates session state:
+a session with the old name still active in `state/` won't automatically
+follow a rename or survive a delete — `switch` it to the new name (or to
+`none`) when convenient; the guardrail fails open, so an active environment
+name that no longer resolves to anything declared is treated like any
+other unclassified boundary, not a crash.
+
+**Edit policy** (`policy.default`, `policy.unknown`, `policy.pairs` — see
+[The manifest](#the-manifest) below for what each means):
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py policy
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --default deny
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --unknown ask
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --pair "vendor-y|vendor-z" gate
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --unpair "vendor-y|vendor-z"
+```
+
+Bare `policy` prints the current settings. `--default` accepts
+`warn`/`ask`/`deny`/`gate`; `--unknown` accepts
+`warn`/`ask`/`deny`/`allow`; `--pair` takes `"envA|envB"` and a mode —
+either side may be the reserved `none` target, so you can make the clean/
+locked baseline explicitly hostile toward one specific environment rather
+than falling through to `default`. Invalid modes and typo'd environment
+names in `--pair` are refused before anything is written.
+
+**Edit project mappings** (which environment is "home" for a given
+project path, resolved by `SessionStart` on every new session):
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py project
+python3 ~/.claude/agentic-gate/agentic-gate.py project --set /path/to/a/project vendor-x
+python3 ~/.claude/agentic-gate/agentic-gate.py project --set "*" pack-a
+python3 ~/.claude/agentic-gate/agentic-gate.py project --unset /path/to/a/project
+```
+
+Bare `project` lists current mappings, `*` being the fallback for any
+project without a specific mapping. `--set`'s environment may be a real
+declared environment, or the reserved `none` target — mapping a project to
+`none` means every new session there starts genuinely zero-trust by
+default, rather than trusting a specific environment from the first
+moment.
 
 ## The manifest
 

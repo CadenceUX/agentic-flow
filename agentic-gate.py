@@ -30,16 +30,36 @@ Usage:
   agentic-gate.py status [session_id]          # print active state + how it's armed
   agentic-gate.py environments [query]         # list; exact name/'shared' shows full detail;
                                                 # anything else searches name/description/patterns
-  agentic-gate.py switch <env> <session_id> [--allow-default] [--preview [PATH]]
+  agentic-gate.py switch <env|none> <session_id> [--allow-default] [--preview [PATH]]
                                                 # manually set the active environment;
                                                 # session_id is required — pass
                                                 # $CLAUDE_CODE_SESSION_ID, or refuses
-                                                # (--allow-default overrides); --preview
-                                                # also writes an HTML status page (env
-                                                # switched from/to, what's now loaded,
-                                                # where each piece lives on disk)
+                                                # (--allow-default overrides); 'none' is
+                                                # a reserved target that clears the
+                                                # active environment (a clean, locked
+                                                # session — nothing silently trusted);
+                                                # --preview also writes an HTML status
+                                                # page (env switched from/to, what's now
+                                                # loaded, where each piece lives on disk)
   agentic-gate.py classify <env|shared> [--skill P] [--agent P] [--command P]
                                         [--mcp P] [--path P] [--create "description"]
+                                        | --delete | --rename <new-name>
+                                        | --description "text"
+                                                # add patterns, or (used alone) delete/
+                                                # rename an environment / edit its
+                                                # description
+  agentic-gate.py declassify <env|shared> [--skill P] [--agent P] [--command P]
+                                          [--mcp P] [--path P]
+                                                # remove patterns (the removal-side
+                                                # companion to classify)
+  agentic-gate.py policy [--default warn|ask|deny|gate]
+                         [--unknown warn|ask|deny|allow]
+                         [--pair "envA|envB" warn|ask|deny|gate] [--unpair "envA|envB"]
+                                                # show (no flags) or edit the manifest's
+                                                # policy block
+  agentic-gate.py project [--set <path|*> <env>] [--unset <path|*>]
+                                                # show (no flags) or edit which
+                                                # environment is 'home' for a project path
   agentic-gate.py audit [--roots DIR] [--check-updates]
                                                 # find installed resources the manifest
                                                 # misses; --check-updates also resolves
@@ -63,7 +83,7 @@ import time
 from html import escape
 from pathlib import Path
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 
 
 # --------------------------------------------------------------------------
@@ -303,7 +323,8 @@ def handle_session_start(data: dict) -> dict:
     lines = [
         f"Agentic-Gate v{VERSION} armed. "
         f"Environments: {', '.join(envs)}. "
-        f"Active environment: {home or '(none — set by first skill invoked)'}. "
+        f"Active environment: "
+        f"{'none (clean — nothing trusted)' if home == CLEAN_TARGET else (home or '(none — set by first skill invoked)')}. "
         f"Policy: default={policy.get('default', 'warn')}, "
         f"unknown={policy.get('unknown', 'warn')}."
     ]
@@ -649,6 +670,7 @@ def audit(argv, quiet=False):
 
 ENV_FIELDS = ("skills", "agents", "commands", "mcp", "paths")
 SHARED_TARGET = "shared"
+CLEAN_TARGET = "none"
 CLASSIFY_FLAGS = {"--skill": "skills", "--agent": "agents",
                    "--command": "commands", "--mcp": "mcp", "--path": "paths"}
 
@@ -1028,7 +1050,7 @@ _ENV_PALETTE = ["#0e7490", "#a16207", "#7c3aed", "#be123c",
 
 
 def _env_color(name):
-    if not name:
+    if not name or name == CLEAN_TARGET:
         return "#71717a"
     h = 0
     for ch in name:
@@ -1037,7 +1059,10 @@ def _env_color(name):
 
 
 def _env_dot(name):
-    label = escape(name) if name else "(none)"
+    if name == CLEAN_TARGET:
+        label = "none (clean)"
+    else:
+        label = escape(name) if name else "(none)"
     return (f"<span class='envtag'><span class='dot' "
             f"style='--dot:{_env_color(name)}'></span>{label}</span>")
 
@@ -1052,7 +1077,15 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
     not something the calling model should hand-author or paraphrase."""
     envs = manifest.get("environments") or {}
     shared = manifest.get("shared") or {}
-    new_env = envs.get(new_env_name, {})
+    if new_env_name == CLEAN_TARGET:
+        new_env = {"description": "No environment loaded — a deliberately "
+                   "clean, locked session. Every classified skill, agent, "
+                   "or command is treated as a foreign cross-environment "
+                   "reach (subject to the policy default or an explicit "
+                   "pair), never silently trusted. Only the shared tier "
+                   "still passes."}
+    else:
+        new_env = envs.get(new_env_name, {})
     prev_env_name = prev_state.get("active")
 
     def section_rows(bucket, fields=ENV_FIELDS):
@@ -1094,6 +1127,127 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
         for name, env in sorted(envs.items()) if name != new_env_name
     ) or "<tr><td colspan='3' class='muted'>no other environments declared</td></tr>"
 
+    switch_reference_rows = "".join(
+        f"<tr><td class='mono'>{escape(cmd)}</td>"
+        f"<td class='muted'>{escape(desc)}</td></tr>"
+        for cmd, desc in (
+            ('switch <environment-name> "$CLAUDE_CODE_SESSION_ID"',
+             "Switch this session's active environment. <environment-name> "
+             "is any name from the tables above (or 'Other declared "
+             "environments' for the full list)."),
+            ('switch <environment-name> "$CLAUDE_CODE_SESSION_ID" --preview',
+             "Switch and regenerate a status page like this one for the "
+             "new environment."),
+            ('switch <environment-name> "$CLAUDE_CODE_SESSION_ID" '
+             '--preview PATH',
+             "Same, but write the status page to a custom path instead of "
+             "the default (~/.claude/agentic-gate/switch-preview.html)."),
+            ('switch <environment-name> "$CLAUDE_CODE_SESSION_ID" '
+             '--allow-default',
+             "Only needed if $CLAUDE_CODE_SESSION_ID is unavailable and you "
+             "genuinely want to write to the shared 'default' state bucket "
+             "on purpose — normally you should always pass a real session "
+             "id instead."),
+            ('switch none "$CLAUDE_CODE_SESSION_ID"',
+             "Clear the active environment entirely — a deliberately clean, "
+             "locked session where nothing is silently trusted. Every "
+             "classified skill/agent/command becomes a cross-environment "
+             "reach subject to policy (only the shared tier still passes). "
+             "Useful for auditing a new pack's true footprint from a "
+             "neutral baseline. 'none' is a reserved keyword, not a real "
+             "environment name."),
+        ))
+
+    other_commands_rows = "".join(
+        f"<tr><td class='mono'>{escape(cmd)}</td>"
+        f"<td class='muted'>{escape(desc)}</td></tr>"
+        for cmd, desc in (
+            ('status "$CLAUDE_CODE_SESSION_ID"',
+             "Print this session's active environment, the manifest path, "
+             "and how the guardrail is armed (plugin / standalone / both / "
+             "none)."),
+            ('environments',
+             "List every declared environment: description plus a "
+             "declared-surface count for each."),
+            ('environments <environment-name|shared>',
+             "Show one environment's (or the shared tier's) full declared "
+             "contents — every pattern, not just a count."),
+            ('environments <query>',
+             "Search by name/description/pattern text, or reverse-look-up "
+             "a concrete skill/agent/command name against a declared glob "
+             "(e.g. does 'VendorX:some-tool' match 'VendorX:*' anywhere?)."),
+            ('classify <environment-name> --skill P [--agent P] '
+             '[--command P] [--mcp P] [--path P]',
+             "Add skill/agent/command/mcp/path patterns to an existing "
+             "environment's declaration."),
+            ('classify <new-name> --create "description" --skill P',
+             "Create a brand-new environment and declare it in the same "
+             "call. Refuses to redefine an existing environment."),
+            ('classify shared --command P',
+             "Add a delivery-utility pattern to the shared tier (always "
+             "available from any environment, silently). 'shared' is "
+             "reserved — --create doesn't apply to it, it always exists."),
+            ('classify <environment-name> --delete',
+             "Delete the whole environment. Used alone — not combined with "
+             "--create or a pattern flag in the same call."),
+            ('classify <environment-name> --rename <new-name>',
+             "Rename an environment, preserving its declared patterns. "
+             "Refuses to overwrite an existing name."),
+            ('classify <environment-name> --description "text"',
+             "Update an existing environment's description."),
+            ('declassify <environment-name|shared> --skill P [--agent P] '
+             '[--command P] [--mcp P] [--path P]',
+             "Remove patterns from an environment's (or shared's) "
+             "declaration — the removal-side companion to classify. "
+             "Removing an absent pattern is a safe no-op, not an error."),
+            ('policy',
+             "Show the manifest's policy block: default mode, unknown "
+             "mode, and any explicit pair overrides."),
+            ('policy --default warn|ask|deny|gate',
+             "Set the mode for a cross-environment reach with no explicit "
+             "pair override."),
+            ('policy --unknown warn|ask|deny|allow',
+             "Set the mode for a call that matches no declared environment "
+             "at all."),
+            ('policy --pair "envA|envB" warn|ask|deny|gate',
+             "Set an explicit override for one specific environment-pair "
+             "boundary (either side may be 'none')."),
+            ('policy --unpair "envA|envB"',
+             "Remove a pair override, reverting that boundary to the "
+             "default mode."),
+            ('project',
+             "Show which environment is 'home' for each mapped project "
+             "path, and the '*' fallback for everywhere unmapped."),
+            ('project --set <path|*> <environment-name>',
+             "Map a project path (or '*' for the fallback) to an "
+             "environment — resolved by SessionStart on every new session. "
+             "The environment may be 'none' for a deliberately zero-trust "
+             "default."),
+            ('project --unset <path|*>',
+             "Remove a project mapping."),
+            ('audit [--roots DIR]',
+             "Scan installed plugins for skills/agents/commands and report "
+             "anything the manifest doesn't classify. Exit code 1 if "
+             "anything is unassigned (CI-friendly)."),
+            ('audit --check-updates',
+             "Also resolve each classified resource's installed version "
+             "and check GitHub for newer releases where possible; writes "
+             "a full report to inventory.json."),
+            ('install',
+             "Standalone-arm the guardrail: copy the engine to "
+             "~/.claude/agentic-gate/, seed environments.json if none "
+             "exists, register the three hooks in ~/.claude/settings.json. "
+             "Not needed if armed via the plugin — enabling the plugin "
+             "registers hooks automatically."),
+            ('uninstall [--purge]',
+             "Disarm the guardrail (removes hook registrations). Keeps the "
+             "manifest and crossings log by default; --purge removes those "
+             "and the engine too."),
+            ('selftest',
+             "Run the embedded fixture test suite. Expect every case "
+             "passing after any change to the manifest schema or engine."),
+        ))
+
     prev_env = envs.get(prev_env_name) if prev_env_name else None
     if prev_env_name and prev_env is not None:
         prev_env_row = (f"<tr><td>{_env_dot(prev_env_name)}</td>"
@@ -1102,6 +1256,9 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
     else:
         prev_env_row = ("<tr><td colspan='3' class='muted'>no prior active "
                         "environment this session</td></tr>")
+
+    new_env_label = ("none (clean)" if new_env_name == CLEAN_TARGET
+                     else new_env_name)
 
     return f"""<style>
 .ag-wrap {{
@@ -1155,7 +1312,7 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
     {hook_rows}
   </table></div>
 
-  <h2>Now active: {escape(new_env_name)}</h2>
+  <h2>Now active: {escape(new_env_label)}</h2>
   <div class="table-scroll"><table>
     <tr><th>Environment</th><th>Description</th><th>Declares</th></tr>
     {new_env_row}
@@ -1183,6 +1340,19 @@ def _build_switch_preview_html(manifest, prev_state, new_env_name):
     <tr><th>Environment</th><th>Description</th><th>Declares</th></tr>
     {other_env_rows}
   </table></div>
+
+  <h2>Switch — your options</h2>
+  <div class="table-scroll"><table>
+    <tr><th>Call</th><th>What it does</th></tr>
+    {switch_reference_rows}
+  </table></div>
+
+  <h2>Other commands</h2>
+  <div class="desc muted">The rest of the CLI, for reference — see README.md for full detail.</div>
+  <div class="table-scroll"><table>
+    <tr><th>Call</th><th>What it does</th></tr>
+    {other_commands_rows}
+  </table></div>
 </div>"""
 
 
@@ -1199,7 +1369,15 @@ def switch_cmd(argv, quiet=False):
     used to fall back to a literal 'default' bucket, silently writing state
     for no actual conversation while looking like it worked. That's refused
     now unless --allow-default is passed explicitly — always prefer passing
-    $CLAUDE_CODE_SESSION_ID, which every Claude Code session sets."""
+    $CLAUDE_CODE_SESSION_ID, which every Claude Code session sets.
+
+    `switch none <session_id>` is a reserved target (not a real environment
+    name, same pattern as `classify shared`) that clears the active
+    environment entirely: every classified skill/agent/command becomes a
+    cross-environment reach subject to policy, instead of being silently
+    trusted as 'home'. Only the shared tier still passes. Useful for
+    auditing a newly installed pack's true footprint from a neutral
+    baseline rather than from inside another trusted environment."""
     if not argv:
         print("agentic-gate: switch requires an environment name "
               "(usage: switch <env> <session_id> [--allow-default] "
@@ -1248,9 +1426,10 @@ def switch_cmd(argv, quiet=False):
               file=sys.stderr)
         return 2
     envs = manifest.get("environments") or {}
-    if env_name not in envs:
+    if env_name != CLEAN_TARGET and env_name not in envs:
         print(f"agentic-gate: unknown environment '{env_name}'. "
-              f"Known: {', '.join(sorted(envs)) or '(none defined)'}",
+              f"Known: {', '.join(sorted(envs)) or '(none defined)'}, or "
+              f"'{CLEAN_TARGET}' to clear the active environment.",
               file=sys.stderr)
         return 2
 
@@ -1258,11 +1437,13 @@ def switch_cmd(argv, quiet=False):
 
     state = dict(prev_state)
     state["active"] = env_name
-    state["set_by"] = "manual switch"
+    state["set_by"] = ("manual switch (clean)" if env_name == CLEAN_TARGET
+                        else "manual switch")
     state["ts"] = time.time()
     save_state(session_id, state)
     if not quiet:
-        print(f"active environment for session '{session_id}' → {env_name}")
+        label = "none (clean — nothing trusted)" if env_name == CLEAN_TARGET else env_name
+        print(f"active environment for session '{session_id}' → {label}")
 
     if preview_requested:
         html = _build_switch_preview_html(manifest, prev_state, env_name)
@@ -1277,6 +1458,12 @@ def switch_cmd(argv, quiet=False):
 
 
 
+CLASSIFY_USAGE = ("usage: classify <env|shared> [--skill P] [--agent P] "
+                   "[--command P] [--mcp P] [--path P] "
+                   "[--create \"description\"] | --delete | "
+                   "--rename <new-name> | --description \"text\"]")
+
+
 def classify_cmd(argv, quiet=False):
     """Add skill/agent/command/mcp/path patterns to an environment's
     declaration in the manifest — the write-side companion to `audit`
@@ -1285,16 +1472,20 @@ def classify_cmd(argv, quiet=False):
     it doesn't exist yet; refuses to silently redefine an existing one.
     The special target name `shared` writes into the manifest's shared
     tier instead of a named environment — it always 'exists' implicitly,
-    so --create/exists-checks don't apply to it."""
+    so --create/exists-checks don't apply to it.
+
+    --delete / --rename / --description are the rest of environment-level
+    CRUD (declassify, below, is the companion pattern-removal verb) — each
+    is a solo structural action: none may be combined with --create, with
+    each other, or with a pattern-adding flag in the same call."""
     if not argv:
-        print("agentic-gate: classify requires an environment name, or "
-              f"'{SHARED_TARGET}' for the shared tier (usage: classify "
-              "<env|shared> [--skill P] [--agent P] [--command P] [--mcp P] "
-              "[--path P] [--create \"description\"])", file=sys.stderr)
+        print(f"agentic-gate: classify requires an environment name, or "
+              f"'{SHARED_TARGET}' for the shared tier ({CLASSIFY_USAGE})",
+              file=sys.stderr)
         return 2
     env_name, rest = argv[0], argv[1:]
 
-    additions, create_desc = {}, None
+    additions, create_desc, delete, rename_to, new_desc = {}, None, False, None, None
     i = 0
     while i < len(rest):
         flag = rest[i]
@@ -1306,10 +1497,31 @@ def classify_cmd(argv, quiet=False):
             create_desc = rest[i + 1]
             i += 2
             continue
+        if flag == "--delete":
+            delete = True
+            i += 1
+            continue
+        if flag == "--rename":
+            if i + 1 >= len(rest):
+                print("agentic-gate: --rename requires a new name",
+                      file=sys.stderr)
+                return 2
+            rename_to = rest[i + 1]
+            i += 2
+            continue
+        if flag == "--description":
+            if i + 1 >= len(rest):
+                print("agentic-gate: --description requires text",
+                      file=sys.stderr)
+                return 2
+            new_desc = rest[i + 1]
+            i += 2
+            continue
         field = CLASSIFY_FLAGS.get(flag)
         if field is None:
             print(f"agentic-gate: unknown flag '{flag}' (expected one of "
-                  f"{', '.join(CLASSIFY_FLAGS)}, --create)", file=sys.stderr)
+                  f"{', '.join(CLASSIFY_FLAGS)}, --create, --delete, "
+                  f"--rename, --description)", file=sys.stderr)
             return 2
         if i + 1 >= len(rest):
             print(f"agentic-gate: {flag} requires a pattern", file=sys.stderr)
@@ -1317,21 +1529,92 @@ def classify_cmd(argv, quiet=False):
         additions.setdefault(field, []).append(rest[i + 1])
         i += 2
 
+    structural = [f for f, v in (("--delete", delete), ("--rename", rename_to),
+                                 ("--description", new_desc)) if v]
+    if structural and (len(structural) > 1 or additions or create_desc is not None):
+        print(f"agentic-gate: {', '.join(structural)} must be used alone — "
+              f"not combined with each other, --create, or a pattern flag "
+              f"in the same call. ({CLASSIFY_USAGE})", file=sys.stderr)
+        return 2
+
+    if create_desc is not None and env_name == CLEAN_TARGET:
+        print(f"agentic-gate: '{CLEAN_TARGET}' is reserved for `switch "
+              f"{CLEAN_TARGET}` (clears the active environment) — it "
+              f"can't also be a declared environment name.", file=sys.stderr)
+        return 2
+
     manifest = load_manifest()
     if manifest is None:
         print(f"agentic-gate: no manifest at {manifest_path()}. Run "
               f"'install' first.", file=sys.stderr)
         return 2
 
-    created = False
     if env_name == SHARED_TARGET:
         if create_desc is not None:
             print("agentic-gate: --create doesn't apply to 'shared' — it "
                   "always exists implicitly.", file=sys.stderr)
             return 2
+        if delete or rename_to is not None:
+            print("agentic-gate: 'shared' can't be deleted or renamed — it "
+                  "always exists implicitly. Use declassify to remove "
+                  "individual patterns from it instead.", file=sys.stderr)
+            return 2
         env = manifest.setdefault("shared", {})
+        if new_desc is not None:
+            env["description"] = new_desc
+            save_manifest(manifest)
+            if not quiet:
+                print(f"'shared' description updated: {new_desc}")
+            return 0
+        created = False
     else:
         envs = manifest.setdefault("environments", {})
+        if delete:
+            if env_name not in envs:
+                print(f"agentic-gate: environment '{env_name}' does not "
+                      f"exist — nothing to delete.", file=sys.stderr)
+                return 2
+            del envs[env_name]
+            save_manifest(manifest)
+            if not quiet:
+                print(f"deleted environment '{env_name}'. Any session "
+                      f"still active in it now reaches an undeclared "
+                      f"environment name — switch those sessions "
+                      f"elsewhere (or to 'none') when convenient.")
+            return 0
+        if rename_to is not None:
+            if env_name not in envs:
+                print(f"agentic-gate: environment '{env_name}' does not "
+                      f"exist — nothing to rename.", file=sys.stderr)
+                return 2
+            if rename_to in envs or rename_to == SHARED_TARGET:
+                print(f"agentic-gate: '{rename_to}' already exists — "
+                      f"refusing to overwrite it.", file=sys.stderr)
+                return 2
+            if rename_to == CLEAN_TARGET:
+                print(f"agentic-gate: '{CLEAN_TARGET}' is reserved for "
+                      f"`switch {CLEAN_TARGET}` — can't rename an "
+                      f"environment to it.", file=sys.stderr)
+                return 2
+            envs[rename_to] = envs.pop(env_name)
+            save_manifest(manifest)
+            if not quiet:
+                print(f"renamed environment '{env_name}' → '{rename_to}'. "
+                      f"Any session with '{env_name}' still active in "
+                      f"state won't automatically follow — switch those "
+                      f"sessions to '{rename_to}' when convenient.")
+            return 0
+        if new_desc is not None:
+            if env_name not in envs:
+                print(f"agentic-gate: environment '{env_name}' does not "
+                      f"exist — nothing to update.", file=sys.stderr)
+                return 2
+            envs[env_name]["description"] = new_desc
+            save_manifest(manifest)
+            if not quiet:
+                print(f"'{env_name}' description updated: {new_desc}")
+            return 0
+
         if env_name not in envs:
             if create_desc is None:
                 print(f"agentic-gate: environment '{env_name}' does not "
@@ -1348,10 +1631,12 @@ def classify_cmd(argv, quiet=False):
                 print(f"created environment '{env_name}': {create_desc}")
         elif create_desc is not None:
             print(f"agentic-gate: environment '{env_name}' already exists "
-                  f"— omit --create to add patterns to it, or edit its "
-                  f"description directly in {manifest_path()}.",
+                  f"— omit --create to add patterns to it, or use "
+                  f"--description to change its description.",
                   file=sys.stderr)
             return 2
+        else:
+            created = False
         env = envs[env_name]
 
     added, skipped = [], []
@@ -1375,6 +1660,248 @@ def classify_cmd(argv, quiet=False):
             print(f"'{env_name}' unchanged — no patterns given "
                   f"(--skill/--agent/--command/--mcp/--path).")
     return 0
+
+
+def declassify_cmd(argv, quiet=False):
+    """Remove skill/agent/command/mcp/path patterns from an environment's
+    (or shared's) declaration — the removal-side companion to `classify`.
+    Idempotent like classify's additions: removing a pattern that isn't
+    there is a safe no-op, reported but not an error."""
+    if not argv:
+        print(f"agentic-gate: declassify requires an environment name, or "
+              f"'{SHARED_TARGET}' (usage: declassify <env|shared> "
+              f"[--skill P] [--agent P] [--command P] [--mcp P] [--path P])",
+              file=sys.stderr)
+        return 2
+    env_name, rest = argv[0], argv[1:]
+
+    removals = {}
+    i = 0
+    while i < len(rest):
+        flag = rest[i]
+        field = CLASSIFY_FLAGS.get(flag)
+        if field is None:
+            print(f"agentic-gate: unknown flag '{flag}' (expected one of "
+                  f"{', '.join(CLASSIFY_FLAGS)})", file=sys.stderr)
+            return 2
+        if i + 1 >= len(rest):
+            print(f"agentic-gate: {flag} requires a pattern", file=sys.stderr)
+            return 2
+        removals.setdefault(field, []).append(rest[i + 1])
+        i += 2
+
+    manifest = load_manifest()
+    if manifest is None:
+        print(f"agentic-gate: no manifest at {manifest_path()}. Run "
+              f"'install' first.", file=sys.stderr)
+        return 2
+
+    if env_name == SHARED_TARGET:
+        env = manifest.get("shared") or {}
+    else:
+        envs = manifest.get("environments") or {}
+        if env_name not in envs:
+            print(f"agentic-gate: unknown environment '{env_name}'. "
+                  f"Known: {', '.join(sorted(envs)) or '(none defined)'}, "
+                  f"or '{SHARED_TARGET}'.", file=sys.stderr)
+            return 2
+        env = envs[env_name]
+
+    removed, skipped = [], []
+    for field, patterns in removals.items():
+        bucket = env.get(field) or []
+        for pattern in patterns:
+            if pattern in bucket:
+                bucket.remove(pattern)
+                removed.append(f"{field}:{pattern}")
+            else:
+                skipped.append(f"{field}:{pattern}")
+
+    if removed:
+        save_manifest(manifest)
+    if not quiet:
+        if removed:
+            print(f"removed from '{env_name}': {', '.join(removed)}")
+        if skipped:
+            print(f"not present, skipped: {', '.join(skipped)}")
+        if not removed and not skipped:
+            print(f"'{env_name}' unchanged — no patterns given "
+                  f"(--skill/--agent/--command/--mcp/--path).")
+    return 0
+
+
+VALID_DEFAULT_MODES = ("warn", "ask", "deny", "gate")
+VALID_UNKNOWN_MODES = ("warn", "ask", "deny", "allow")
+
+
+def policy_cmd(argv, quiet=False):
+    """Show or edit the manifest's policy block: policy.default (the mode
+    for an undeclared-pair cross-environment reach), policy.unknown (the
+    mode for a call that matches no environment at all), and policy.pairs
+    (explicit overrides for specific environment-pair boundaries). Bare
+    `policy` with no flags prints the current settings — the only way to
+    see or change these before this verb existed was reading/hand-editing
+    environments.json directly."""
+    manifest = load_manifest()
+    if manifest is None:
+        print(f"agentic-gate: no manifest at {manifest_path()}. Run "
+              f"'install' first.", file=sys.stderr)
+        return 2
+    policy = manifest.setdefault("policy", {"default": "warn",
+                                             "unknown": "warn", "pairs": {}})
+    pairs = policy.setdefault("pairs", {})
+
+    if not argv:
+        if not quiet:
+            print(f"default: {policy.get('default', 'warn')}")
+            print(f"unknown: {policy.get('unknown', 'warn')}")
+            if pairs:
+                print("pairs:")
+                for k, v in pairs.items():
+                    print(f"  {k} → {v}")
+            else:
+                print("pairs: (none — every cross-environment reach falls "
+                      "back to 'default')")
+        return {"default": policy.get("default", "warn"),
+                "unknown": policy.get("unknown", "warn"), "pairs": dict(pairs)}
+
+    changed = False
+    i = 0
+    while i < len(argv):
+        flag = argv[i]
+        if flag == "--default":
+            if i + 1 >= len(argv) or argv[i + 1] not in VALID_DEFAULT_MODES:
+                print(f"agentic-gate: --default requires one of "
+                      f"{', '.join(VALID_DEFAULT_MODES)}", file=sys.stderr)
+                return 2
+            policy["default"] = argv[i + 1]
+            changed = True
+            i += 2
+            continue
+        if flag == "--unknown":
+            if i + 1 >= len(argv) or argv[i + 1] not in VALID_UNKNOWN_MODES:
+                print(f"agentic-gate: --unknown requires one of "
+                      f"{', '.join(VALID_UNKNOWN_MODES)}", file=sys.stderr)
+                return 2
+            policy["unknown"] = argv[i + 1]
+            changed = True
+            i += 2
+            continue
+        if flag == "--pair":
+            if i + 2 >= len(argv):
+                print("agentic-gate: --pair requires 'envA|envB' and a mode",
+                      file=sys.stderr)
+                return 2
+            key, mode = argv[i + 1], argv[i + 2]
+            if "|" not in key:
+                print("agentic-gate: --pair's first argument must be "
+                      "'envA|envB'", file=sys.stderr)
+                return 2
+            a, _, b = key.partition("|")
+            envs = manifest.get("environments") or {}
+            for side in (a, b):
+                if side != CLEAN_TARGET and side not in envs:
+                    print(f"agentic-gate: '{side}' is not a declared "
+                          f"environment (or '{CLEAN_TARGET}') — check for "
+                          f"a typo.", file=sys.stderr)
+                    return 2
+            if mode not in VALID_DEFAULT_MODES:
+                print(f"agentic-gate: --pair's mode must be one of "
+                      f"{', '.join(VALID_DEFAULT_MODES)}", file=sys.stderr)
+                return 2
+            pairs[key] = mode
+            changed = True
+            i += 3
+            continue
+        if flag == "--unpair":
+            if i + 1 >= len(argv):
+                print("agentic-gate: --unpair requires 'envA|envB'",
+                      file=sys.stderr)
+                return 2
+            key = argv[i + 1]
+            if key in pairs:
+                del pairs[key]
+                changed = True
+            elif not quiet:
+                print(f"'{key}' was not a configured pair — nothing to "
+                      f"remove.")
+            i += 2
+            continue
+        print(f"agentic-gate: unknown flag '{flag}' (expected one of "
+              f"--default, --unknown, --pair, --unpair)", file=sys.stderr)
+        return 2
+
+    if changed:
+        save_manifest(manifest)
+        if not quiet:
+            print(f"policy updated — default={policy.get('default')}, "
+                  f"unknown={policy.get('unknown')}, "
+                  f"pairs={dict(pairs) or '(none)'}")
+    return 0
+
+
+def project_cmd(argv, quiet=False):
+    """Show or edit the manifest's projects block: which environment is
+    'home' for a given project path (or the '*' fallback for anywhere
+    unmapped) — resolved by SessionStart on every new session. Bare
+    `project` with no flags lists the current mappings."""
+    manifest = load_manifest()
+    if manifest is None:
+        print(f"agentic-gate: no manifest at {manifest_path()}. Run "
+              f"'install' first.", file=sys.stderr)
+        return 2
+    projects = manifest.setdefault("projects", {})
+
+    if not argv:
+        if not quiet:
+            if projects:
+                for path, env in projects.items():
+                    label = "* (fallback for unmapped projects)" if path == "*" else path
+                    print(f"{label} → {env}")
+            else:
+                print("(no project mappings declared — every session "
+                      "starts with no active environment until the first "
+                      "skill runs)")
+        return dict(projects)
+
+    flag = argv[0]
+    if flag == "--set":
+        if len(argv) < 3:
+            print("agentic-gate: --set requires a path (or '*') and an "
+                  "environment name", file=sys.stderr)
+            return 2
+        path, env_name = argv[1], argv[2]
+        envs = manifest.get("environments") or {}
+        if env_name != CLEAN_TARGET and env_name not in envs:
+            print(f"agentic-gate: '{env_name}' is not a declared "
+                  f"environment (or '{CLEAN_TARGET}') — check for a typo, "
+                  f"or `classify {env_name} --create \"description\"` it "
+                  f"first.", file=sys.stderr)
+            return 2
+        projects[path] = env_name
+        save_manifest(manifest)
+        if not quiet:
+            label = "*" if path == "*" else path
+            print(f"project mapping set: {label} → {env_name}")
+        return 0
+    if flag == "--unset":
+        if len(argv) < 2:
+            print("agentic-gate: --unset requires a path (or '*')",
+                  file=sys.stderr)
+            return 2
+        path = argv[1]
+        if path in projects:
+            del projects[path]
+            save_manifest(manifest)
+            if not quiet:
+                print(f"project mapping removed: {path}")
+        elif not quiet:
+            print(f"'{path}' was not mapped — nothing to remove.")
+        return 0
+
+    print(f"agentic-gate: unknown flag '{flag}' (expected --set or "
+          f"--unset)", file=sys.stderr)
+    return 2
 
 
 # --------------------------------------------------------------------------
@@ -1734,6 +2261,25 @@ def selftest() -> int:
             check("switch with a real session id is unaffected by the refusal logic",
                   switch_cmd(["vendor-x", "t3"], quiet=True) == 0)
 
+            # --- switch none: clear the active environment (clean/locked) ---
+            rc = switch_cmd(["none", "t3"], quiet=True)
+            check("switch none succeeds without needing to be a declared "
+                  "environment", rc == 0)
+            check("switch none sets active to the reserved 'none' sentinel",
+                  load_state("t3").get("active") == "none")
+
+            check("evaluate() with active='none' treats a classified "
+                  "environment's call as cross-environment, not silently "
+                  "trusted as home",
+                  evaluate(manifest, {"active": "none"}, "Skill",
+                           {"skill": "VendorX:some-tool"})["decision"]
+                  == "warn")
+            check("evaluate() with active='none' still allows the shared "
+                  "tier",
+                  evaluate(manifest, {"active": "none"}, "Bash",
+                           {"command": "vx-clipboard-write XMSC /tmp/x.xml"}
+                           )["decision"] == "allow")
+
             # --- switch --preview: writes an HTML status page ---
             rc = switch_cmd(["pack-a", "t3", "--preview"], quiet=True)
             check("switch --preview succeeds", rc == 0)
@@ -1749,9 +2295,46 @@ def selftest() -> int:
                   "Environment/Description/Declares table format as "
                   "'Switched out of' and 'Other declared environments'",
                   "1 skills, 1 paths" in preview_html)
+            check("switch --preview HTML includes a generic switch "
+                  "call/description reference table",
+                  "switch &lt;environment-name&gt; &quot;"
+                  "$CLAUDE_CODE_SESSION_ID&quot; --preview" in preview_html)
+            check("switch --preview HTML's reference table explains "
+                  "--allow-default",
+                  "--allow-default" in preview_html
+                  and "genuinely want to write to the shared" in preview_html)
+            check("switch --preview HTML includes an 'Other commands' "
+                  "section covering the rest of the CLI",
+                  "Other commands" in preview_html
+                  and "audit --check-updates" in preview_html
+                  and "install" in preview_html
+                  and "uninstall" in preview_html
+                  and "selftest" in preview_html
+                  and "classify shared" in preview_html)
+            check("switch --preview HTML's 'Other commands' covers the "
+                  "full CRUD set for environments (create/read/update/"
+                  "delete) and policy/project editing",
+                  "declassify" in preview_html
+                  and "--delete" in preview_html
+                  and "--rename" in preview_html
+                  and "policy --pair" in preview_html
+                  and "project --set" in preview_html)
             check("switch --preview HTML has no forbidden top-level tags",
                   not any(tag in preview_html.lower() for tag in
                           ("<!doctype", "<html", "<head", "<body")))
+
+            rc = switch_cmd(["none", "t3", "--preview"], quiet=True)
+            check("switch none --preview succeeds", rc == 0)
+            clean_preview_html = preview_default.read_text(encoding="utf-8")
+            check("switch none --preview HTML labels the active environment "
+                  "as the clean/locked state, not a raw 'none' name",
+                  "none (clean)" in clean_preview_html)
+            check("switch none --preview HTML explains nothing is silently "
+                  "trusted",
+                  "deliberately clean, locked session" in clean_preview_html)
+            check("switch none --preview HTML shows what was switched out "
+                  "of (pack-a, the previously active real environment)",
+                  "pack-a" in clean_preview_html)
 
             custom_preview = Path(td) / "custom-preview.html"
             rc = switch_cmd(["vendor-x", "t3", "--preview", str(custom_preview)],
@@ -1809,6 +2392,167 @@ def selftest() -> int:
                               quiet=True)
             check("classify --create refuses to redefine an existing "
                   "environment", rc == 2)
+
+            rc = classify_cmd([CLEAN_TARGET, "--create", "Nope"], quiet=True)
+            check("classify --create refuses the reserved 'none' target",
+                  rc == 2)
+            check("classify --create on 'none' makes no manifest change",
+                  CLEAN_TARGET not in load_manifest()["environments"])
+
+            # --- classify: edit an existing environment's description ---
+            rc = classify_cmd(["vendor-x", "--description", "Updated desc"],
+                              quiet=True)
+            check("classify --description succeeds", rc == 0)
+            check("classify --description actually updates it",
+                  load_manifest()["environments"]["vendor-x"]["description"]
+                  == "Updated desc")
+            check("classify --description leaves existing patterns alone",
+                  "VendorX:*" in load_manifest()["environments"]["vendor-x"]["skills"])
+
+            rc = classify_cmd(["no-such-env", "--description", "x"], quiet=True)
+            check("classify --description refuses an unknown environment",
+                  rc == 2)
+
+            rc = classify_cmd(["vendor-x", "--description", "x",
+                               "--skill", "y:*"], quiet=True)
+            check("classify --description refuses combination with a "
+                  "pattern flag in the same call", rc == 2)
+            check("classify --description's refused combination made no "
+                  "manifest change",
+                  "y:*" not in load_manifest()["environments"]["vendor-x"]["skills"])
+
+            # --- classify: rename an environment ---
+            classify_cmd(["temp-rename-env", "--create", "Renamable",
+                         "--skill", "temp:*"], quiet=True)
+            rc = classify_cmd(["temp-rename-env", "--rename", "renamed-env"],
+                              quiet=True)
+            check("classify --rename succeeds", rc == 0)
+            after_rename = load_manifest()["environments"]
+            check("classify --rename removes the old name and adds the new "
+                  "one, preserving contents",
+                  "temp-rename-env" not in after_rename
+                  and after_rename.get("renamed-env", {}).get("skills") == ["temp:*"])
+
+            rc = classify_cmd(["renamed-env", "--rename", "vendor-x"], quiet=True)
+            check("classify --rename refuses to overwrite an existing "
+                  "environment name", rc == 2)
+            rc = classify_cmd(["renamed-env", "--rename", CLEAN_TARGET],
+                              quiet=True)
+            check("classify --rename refuses the reserved 'none' target",
+                  rc == 2)
+            rc = classify_cmd(["no-such-env", "--rename", "whatever"], quiet=True)
+            check("classify --rename refuses an unknown source environment",
+                  rc == 2)
+
+            # --- classify: delete an environment ---
+            classify_cmd(["temp-delete-env", "--create", "Deletable"],
+                        quiet=True)
+            rc = classify_cmd(["temp-delete-env", "--delete"], quiet=True)
+            check("classify --delete succeeds", rc == 0)
+            check("classify --delete actually removes the environment",
+                  "temp-delete-env" not in load_manifest()["environments"])
+
+            rc = classify_cmd(["temp-delete-env", "--delete"], quiet=True)
+            check("classify --delete refuses a not-found environment "
+                  "(no silent no-op)", rc == 2)
+            rc = classify_cmd(["shared", "--delete"], quiet=True)
+            check("classify --delete refuses 'shared' (always exists "
+                  "implicitly)", rc == 2)
+            rc = classify_cmd(["renamed-env", "--delete", "--skill", "z:*"],
+                              quiet=True)
+            check("classify --delete refuses combination with a pattern "
+                  "flag in the same call", rc == 2)
+
+            # --- declassify: remove patterns (the removal-side companion) ---
+            rc = declassify_cmd(["vendor-x", "--skill", "VendorX:new-tool"],
+                                quiet=True)
+            check("declassify succeeds", rc == 0)
+            check("declassify actually removes the pattern",
+                  "VendorX:new-tool" not in
+                  load_manifest()["environments"]["vendor-x"]["skills"])
+            check("declassify's removal is enforced on the next evaluation "
+                  "— the pattern is now unclassified, so a Skill call "
+                  "falls to policy.unknown ('warn') rather than staying "
+                  "silently allowed as vendor-x's own",
+                  evaluate(load_manifest(), {"active": "pack-a"}, "Skill",
+                          {"skill": "VendorX:new-tool"})["decision"] == "warn")
+
+            rc = declassify_cmd(["vendor-x", "--skill", "VendorX:new-tool"],
+                                quiet=True)
+            check("declassify is idempotent — removing an absent pattern "
+                  "is a safe no-op, not an error", rc == 0)
+
+            rc = declassify_cmd(["no-such-env", "--skill", "x:*"], quiet=True)
+            check("declassify refuses an unknown environment", rc == 2)
+
+            # --- policy: show and edit policy.default / .unknown / .pairs ---
+            shown = policy_cmd([], quiet=True)
+            check("policy with no flags returns the current settings",
+                  shown["default"] == "warn" and shown["unknown"] == "warn")
+
+            rc = policy_cmd(["--default", "deny"], quiet=True)
+            check("policy --default succeeds", rc == 0)
+            check("policy --default actually updates it",
+                  load_manifest()["policy"]["default"] == "deny")
+            rc = policy_cmd(["--default", "not-a-real-mode"], quiet=True)
+            check("policy --default refuses an invalid mode", rc == 2)
+            check("policy --default's refusal made no manifest change",
+                  load_manifest()["policy"]["default"] == "deny")
+
+            rc = policy_cmd(["--unknown", "deny"], quiet=True)
+            check("policy --unknown succeeds", rc == 0)
+            check("policy --unknown actually updates it",
+                  load_manifest()["policy"]["unknown"] == "deny")
+
+            rc = policy_cmd(["--pair", "vendor-x|renamed-env", "deny"],
+                            quiet=True)
+            check("policy --pair succeeds for two real environments", rc == 0)
+            check("policy --pair actually adds it",
+                  load_manifest()["policy"]["pairs"].get("vendor-x|renamed-env")
+                  == "deny")
+            rc = policy_cmd(["--pair", CLEAN_TARGET + "|vendor-x", "deny"],
+                            quiet=True)
+            check("policy --pair allows the reserved 'none' target on "
+                  "either side", rc == 0)
+            rc = policy_cmd(["--pair", "vendor-x|not-a-real-env", "deny"],
+                            quiet=True)
+            check("policy --pair refuses a typo'd environment name", rc == 2)
+
+            rc = policy_cmd(["--unpair", "vendor-x|renamed-env"], quiet=True)
+            check("policy --unpair succeeds", rc == 0)
+            check("policy --unpair actually removes it",
+                  "vendor-x|renamed-env" not in load_manifest()["policy"]["pairs"])
+            rc = policy_cmd(["--unpair", "vendor-x|renamed-env"], quiet=True)
+            check("policy --unpair is idempotent for an already-absent pair",
+                  rc == 0)
+
+            # --- project: show and edit the projects (cwd → home env) map ---
+            shown = project_cmd([], quiet=True)
+            check("project with no flags returns the current mappings",
+                  shown.get("*") == "pack-a")
+
+            rc = project_cmd(["--set", "/tmp/new-project", "vendor-x"],
+                             quiet=True)
+            check("project --set succeeds for a real environment", rc == 0)
+            check("project --set actually adds the mapping",
+                  load_manifest()["projects"].get("/tmp/new-project")
+                  == "vendor-x")
+            rc = project_cmd(["--set", "/tmp/other-project", CLEAN_TARGET],
+                             quiet=True)
+            check("project --set allows the reserved 'none' target as a "
+                  "project's home (a deliberately zero-trust default)",
+                  rc == 0)
+            rc = project_cmd(["--set", "/tmp/bad-project", "not-a-real-env"],
+                             quiet=True)
+            check("project --set refuses a typo'd environment name", rc == 2)
+
+            rc = project_cmd(["--unset", "/tmp/new-project"], quiet=True)
+            check("project --unset succeeds", rc == 0)
+            check("project --unset actually removes the mapping",
+                  "/tmp/new-project" not in load_manifest()["projects"])
+            rc = project_cmd(["--unset", "/tmp/new-project"], quiet=True)
+            check("project --unset is idempotent for an already-absent "
+                  "mapping", rc == 0)
 
             # --- environments <exact-name> shows the real declared patterns ---
             detail = environments_cmd(["vendor-x"], quiet=True)
@@ -1897,6 +2641,14 @@ def main() -> int:
             return switch_cmd(rest)
         if verb == "classify":
             return classify_cmd(rest)
+        if verb == "declassify":
+            return declassify_cmd(rest)
+        if verb == "policy":
+            result = policy_cmd(rest)
+            return result if isinstance(result, int) else 0
+        if verb == "project":
+            result = project_cmd(rest)
+            return result if isinstance(result, int) else 0
         if verb == "status":
             sid = rest[0] if rest else "default"
             settings = {}

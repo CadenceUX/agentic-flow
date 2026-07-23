@@ -202,6 +202,20 @@ id, not an error to route around. If you genuinely need the shared
 `default` bucket on purpose (e.g. a one-off manual test from a terminal
 with no session), pass `--allow-default` explicitly.
 
+**`switch none "$CLAUDE_CODE_SESSION_ID"` clears the active environment —
+a deliberately clean, locked session.** `none` is a reserved target (same
+pattern as `classify shared`), not a real environment name. With no active
+environment, every classified skill/agent/command becomes a
+cross-environment reach subject to policy instead of being silently
+trusted as home — only the shared tier still passes. Reach for this when
+the user wants to audit a newly installed pack's true footprint (which
+warnings/gates does it actually trigger?) from a neutral baseline, rather
+than testing it from inside another environment that already grants it
+implicit trust. Note it's a starting point, not a sticky lock: the normal
+`PostToolUse` auto-switch still promotes `active` away from `none` the
+first time a `Skill` call is actually allowed through, same as switching
+into any other environment.
+
 **When the user wants to *see* what a switch changed, add `--preview`:**
 
 ```bash
@@ -226,7 +240,10 @@ help them find where the resource they're about to touch actually lives —
 not on every switch by default, since the automatic SessionStart/
 PostToolUse switches deliberately stay silent (a preview per silent switch
 during ordinary work would be noise, not signal); this flag only exists on
-the manual `switch` verb.
+the manual `switch` verb. The page also ends with a "Switch — your
+options" reference table — every `switch` call form (including `none`)
+paired with a plain-English description — so a user reading the published
+Artifact has the full picture without needing this skill file open too.
 
 ```bash
 python3 ~/.claude/agentic-gate/agentic-gate.py classify <env> --skill "Pack:*"
@@ -245,11 +262,77 @@ refusal as a prompt to confirm the name with the user, not an error to
 work around. `shared` always "exists" implicitly, so `--create` doesn't
 apply to it.
 
-**A `"*"` entry in `projects`** sets a default/fallback environment for
-sessions outside every mapped project path (checked last, never overrides
-a real path match). Useful when the user wants "most sessions start
-trusting my own skills" without mapping every possible working directory —
-walk them through adding it the same way as any other `projects` entry.
+## Full CRUD — nothing requires hand-editing environments.json
+
+`classify` above covers create and update-by-adding. The rest of the
+manifest's CRUD surface — removing a pattern, deleting/renaming/
+re-describing a whole environment, and editing policy or project
+mappings — has its own verbs. **Reach for these instead of ever telling
+the user to hand-edit the manifest; that would violate this skill's own
+prime directive.**
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py declassify vendor-x --skill "VendorX:old-tool"
+```
+
+`declassify` removes patterns — same `--skill`/`--agent`/`--command`/
+`--mcp`/`--path` flag shape as `classify`, but subtracting instead of
+adding. Removing an absent pattern is a safe no-op, not an error.
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py classify old-vendor --delete
+python3 ~/.claude/agentic-gate/agentic-gate.py classify old-name --rename new-name
+python3 ~/.claude/agentic-gate/agentic-gate.py classify vendor-x --description "Updated description"
+```
+
+Three more `classify` flags for whole-environment lifecycle — each is a
+**solo action**: never combine `--delete`/`--rename`/`--description` with
+each other, with `--create`, or with a pattern flag in the same call (the
+engine refuses the combination outright, cleanly, before writing
+anything). `--delete` refuses `shared` (always exists implicitly) and
+refuses an environment that doesn't exist — no silent no-op here, since
+silently doing nothing on a mistyped delete is worse than an error.
+`--rename` refuses to overwrite an existing name and refuses the reserved
+`none` target. Neither flag migrates session state: warn the user that a
+session with the old name still active in `state/` won't automatically
+follow — offer to `switch` it to the new name (or to `none`) for them.
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py policy
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --default deny
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --unknown ask
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --pair "vendor-y|vendor-z" gate
+python3 ~/.claude/agentic-gate/agentic-gate.py policy --unpair "vendor-y|vendor-z"
+```
+
+`policy` shows or edits `policy.default` (mode for an undeclared-pair
+cross-environment reach; accepts `warn`/`ask`/`deny`/`gate`),
+`policy.unknown` (mode for a call matching no declared environment at
+all; accepts `warn`/`ask`/`deny`/`allow`), and `policy.pairs` (explicit
+per-boundary overrides via `--pair "envA|envB" mode` / `--unpair
+"envA|envB"`). Either side of a pair may be the reserved `none` target —
+useful when the user wants the clean/locked baseline to be explicitly
+hostile toward one specific environment rather than just falling through
+to `default`. Invalid modes and typo'd environment names in `--pair` are
+refused before anything is written — treat that refusal as a prompt to
+confirm spelling with the user.
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py project
+python3 ~/.claude/agentic-gate/agentic-gate.py project --set /path/to/a/project vendor-x
+python3 ~/.claude/agentic-gate/agentic-gate.py project --set "*" pack-a
+python3 ~/.claude/agentic-gate/agentic-gate.py project --unset /path/to/a/project
+```
+
+`project` shows or edits which environment is "home" for a project path
+— resolved by `SessionStart` on every new session. **A `"*"` entry is the
+default/fallback for sessions outside every specifically-mapped project
+path** (checked last, never overrides a real path match) — this is how
+"most sessions start trusting my own skills" gets set up now, via
+`project --set "*" <env>`, not by hand-editing. The target environment may
+also be the reserved `none` target, giving a project a genuinely
+zero-trust default from the first session, rather than trusting some
+environment implicitly from the start.
 
 ## Explaining a warning or gate to the user
 
