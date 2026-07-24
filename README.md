@@ -54,6 +54,7 @@ Every verb, at a glance. Each is covered in its own detail below.
 | Call | What it does |
 |---|---|
 | `status ["$CLAUDE_CODE_SESSION_ID"]` | Print this session's active environment, the manifest path, and how the guardrail is armed (plugin / standalone / both / none). |
+| `status ["$CLAUDE_CODE_SESSION_ID"] --preview [PATH]` | Same, and also writes a self-contained HTML status page for the *current* state (default `~/.claude/agentic-gate/switch-preview.html`) — a pure read, nothing changes. Use this to preview without switching; `switch --preview` below always performs the switch first. |
 | `environments` | List every declared environment: description plus a declared-surface count for each. |
 | `environments <environment-name\|shared>` | Show one environment's (or the shared tier's) full declared contents — every pattern, not just a count. |
 | `environments <query>` | Search by name/description/pattern text, or reverse-look-up a concrete skill/agent/command name against a declared glob. |
@@ -268,6 +269,21 @@ switch during ordinary work would be constant noise, not a useful signal.
 The page also ends with a "Switch — your options" reference table (every
 `switch` call form, including `none`, paired with what it does) so the
 page is self-contained without needing this README open alongside it.
+
+**`switch --preview` is not a dry run** — it performs the switch, then
+reports on it. If you want to see what an environment's full declared
+surface looks like *without* changing the active environment, use `status
+--preview` instead:
+
+```bash
+python3 ~/.claude/agentic-gate/agentic-gate.py status "$CLAUDE_CODE_SESSION_ID" --preview
+```
+
+Same page shape as `switch --preview` (hooks enforcing it, full declared
+surface plus shared tier, per-item location, command reference table), but
+for whichever environment is *already* active — no from/to banner, no
+"Switched out of" section, since nothing was switched. A pure read: the
+session's active environment is unchanged before and after the call.
 
 ```bash
 python3 ~/.claude/agentic-gate/agentic-gate.py classify vendor-x --skill "VendorX:*"

@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.2.9 — 2026-07-25
+
+Found while running Agentic-Gate live during an unrelated QA-testing session: `switch --preview`
+looks like a dry run from its name, but it isn't one — it performs the switch, then reports on it
+(by design, per v0.2.5's own changelog entry). There was no way to preview an environment's full
+declared surface *without* committing to switching into it first, which matters most for the
+active environment you're already in — "what exactly is loaded and enforced right now" shouldn't
+require a round-trip switch away and back just to see it rendered.
+
+- **New `status --preview [PATH]` verb.** A pure read: writes the same self-contained HTML status
+  page as `switch --preview` (hooks enforcing it, full declared surface plus the always-on shared
+  tier, per-item best-effort location, command reference tables) but for whichever environment is
+  *already* active, with no state change before or after the call. Drops the from/to banner and
+  the "Switched out of" section that only make sense after an actual switch — replaced with a
+  simple "checked <timestamp>" banner and the single active environment's own row. Defaults to the
+  same path as `switch --preview` (`~/.claude/agentic-gate/switch-preview.html`); pass an explicit
+  `PATH` to keep the two from clobbering each other if you want both on disk at once.
+- `_build_switch_preview_html()` gains a `mode="status"` parameter (default `"switch"`, unchanged
+  behaviour) rather than a second, near-duplicate template function — same page generator, two
+  banner/section variants.
+- `status`'s CLI handling was inlined directly in `main()`; extracted into its own `status_cmd()`
+  (returns the result dict when `quiet=True`, for direct selftest calls without going through
+  stdout/argv) so `--preview` parsing didn't have to be duplicated a second time next to `switch`'s.
+- Selftest: 11 new checks — `status` is confirmed a pure read (state before/after identical),
+  `--preview` writes to the default path and to an explicit `PATH`, the HTML is titled "environment
+  status" not "environment switch," has no "Switched out of" section, still carries both reference
+  tables, and has no forbidden top-level tags. 155/155 passing (up from 144).
+- README: new command-reference row and a dedicated prose section contrasting `status --preview`
+  (pure read, current state) against `switch --preview` (always switches first) side by side, so
+  the distinction that motivated this release doesn't quietly go undocumented again.
+
 ## v0.2.8 — 2026-07-24
 
 Three follow-ups from actually using `switch --preview` and then actually trying to manage a
